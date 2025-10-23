@@ -53,3 +53,45 @@ streamlit run app.py
 
 # After running, open the URL shown in your terminal (usually http://localhost:8501)
 
+
+🧾 Usage
+
+Enter a YouTube video URL or ID
+
+Set refresh interval and comment limit
+
+Click Start Sentiment Analysis
+
+Explore:
+
+Sentiment distribution (Pie Chart)
+
+Comment timeline (Scatter Plot)
+
+Word cloud summary
+
+Most positive and negative comments
+
+💡 Future Improvements
+
+🌍 Add multilingual comment translation using deep-translator
+
+❤️ Include fine-grained emotion detection model
+
+💬 Support for nested comment replies
+
+🗄️ Database integration for long-term analytics
+
+🧑‍💻 Author
+
+Peddapelli Vamshi – GitHub(https://github.com/peddapellivamshi7)
+
+If you like this project, please ⭐ the repo and share your feedback!
+
+🪪 License
+
+This project is licensed under the MIT License – you are free to use and modify it.
+
+🏷️ Tags
+
+streamlit • nlp • huggingface • youtube-api • sentiment-analysis • python • data-visualization
