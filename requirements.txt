@@ -1,4 +1,5 @@
 streamlit
+python-dotenv
 pandas
 google-api-python-client
 transformers
