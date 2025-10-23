@@ -9,6 +9,8 @@ import time
 import random
 import re
 from urllib.parse import urlparse, parse_qs
+import os
+from dotenv import load_dotenv
 
 
 # Initialize Hugging Face Sentiment Model
@@ -21,7 +23,8 @@ sentiment_model = pipeline(
 # -------------------------------------------------
 # YouTube API Key
 # -------------------------------------------------
-API_KEY = "AIzaSyAcwE1DCGYtBYVG9cvu0O5oX35vIA13xFU"
+load_dotenv()
+API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 # -------------------------------------------------
 # Function: Extract Video ID from URL or Plain ID
