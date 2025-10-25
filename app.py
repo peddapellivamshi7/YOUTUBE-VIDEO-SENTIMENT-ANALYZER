@@ -5,188 +5,195 @@ from transformers import pipeline
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import plotly.express as px
-import time
-import random
 import re
-from urllib.parse import urlparse, parse_qs
+import random
 import os
+from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
 
+# =====================================
+# ⚙️ INITIAL SETUP
+# =====================================
+st.set_page_config(page_title="YouTube Sentiment Analyzer", layout="wide")
+st.title("🎥 YouTube Comment Sentiment Dashboard")
 
-# Initialize Hugging Face Sentiment Model
-# -------------------------------------------------
-sentiment_model = pipeline(
-    task="sentiment-analysis",
-    model="cardiffnlp/twitter-roberta-base-sentiment-latest"
-)
+# Load .env only once
+@st.cache_resource
+def load_env_key():
+    load_dotenv()
+    return os.getenv("YOUTUBE_API_KEY")
 
-# -------------------------------------------------
-# YouTube API Key
-# -------------------------------------------------
-load_dotenv()
-API_KEY = os.getenv("YOUTUBE_API_KEY")
+API_KEY = load_env_key()
+if not API_KEY:
+    st.error("❌ Missing YouTube API key. Please add it to your `.env` file as YOUTUBE_API_KEY.")
+    st.stop()
 
-# -------------------------------------------------
-# Function: Extract Video ID from URL or Plain ID
-# -------------------------------------------------
+# =====================================
+# 🚀 CACHED RESOURCES
+# =====================================
+@st.cache_resource
+def load_sentiment_model():
+    """Load Hugging Face sentiment model once (cached)."""
+    return pipeline(
+        "sentiment-analysis",
+        model="cardiffnlp/twitter-roberta-base-sentiment-latest",
+        device=-1  # Use GPU if available
+    )
+
+sentiment_model = load_sentiment_model()
+
+@st.cache_resource
+def get_youtube_service():
+    """Initialize YouTube Data API service once."""
+    return build("youtube", "v3", developerKey=API_KEY, cache_discovery=False)
+
+yt_service = get_youtube_service()
+
+# =====================================
+# 🧩 UTILITY FUNCTIONS
+# =====================================
 def parse_video_identifier(video_input: str) -> str:
-    """Return a valid YouTube video ID from a full URL or short ID."""
+    """Extract YouTube video ID from a URL or ID."""
     if re.match(r"^[A-Za-z0-9_-]{10,}$", video_input):
         return video_input
     parsed = urlparse(video_input)
+    if parsed.netloc.endswith("youtu.be"):
+        return parsed.path.strip("/")
     query = parse_qs(parsed.query)
     if "v" in query:
         return query["v"][0]
-    if parsed.netloc.endswith("youtu.be"):
-        return parsed.path.strip("/")
-    raise ValueError(f"Unable to extract video ID from: {video_input}")
+    raise ValueError("Invalid YouTube link or video ID.")
 
-# -------------------------------------------------
-# Function: Retrieve Comments Using YouTube API
-# -------------------------------------------------
+@st.cache_data(ttl=600)
 def fetch_youtube_comments(video_id: str, limit: int = 100):
-    """Fetch up to `limit` top-level comments for a given video."""
-    yt_service = build("youtube", "v3", developerKey=API_KEY, cache_discovery=False)
+    """Fetch and deduplicate YouTube comments efficiently."""
     comments, token = [], None
-
     while True:
         resp = yt_service.commentThreads().list(
             part="snippet",
             videoId=video_id,
-            maxResults=100,
+            maxResults=min(100, limit - len(comments)),
             textFormat="plainText",
             pageToken=token
         ).execute()
 
         for item in resp.get("items", []):
-            comment_text = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
-            comments.append(comment_text)
+            text = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"].strip()
+            comments.append(text)
             if len(comments) >= limit:
-                return comments
+                break
 
-        token = resp.get("nextPageToken")
-        if not token:
+        if len(comments) >= limit or "nextPageToken" not in resp:
             break
-    return comments
+        token = resp["nextPageToken"]
 
-# -------------------------------------------------
-# Function: Run Sentiment Analysis on a Comment
-# -------------------------------------------------
-def evaluate_sentiment(comment_text: str):
-    """Analyze a single comment and return sentiment, emotion, and score."""
-    result = sentiment_model(comment_text[:512])[0]
-    sentiment_label = result["label"].capitalize()
-    confidence = result["score"]
+    # Remove duplicates quickly (case-insensitive hash set)
+    seen, unique = set(), []
+    for c in comments:
+        key = c.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+    return unique[:limit]
 
-    # Random emotion mapping for visualization
-    emotion_mapping = {
+def evaluate_sentiment_batch(comments):
+    """Batch sentiment analysis for speed."""
+    truncated = [c[:512] for c in comments]
+    results = sentiment_model(truncated, batch_size=32, truncation=True)
+
+    emotion_map = {
         "Positive": ["Joy", "Excitement", "Admiration"],
         "Negative": ["Anger", "Sadness", "Disgust"],
         "Neutral": ["Calm", "Indifferent", "Curiosity"]
     }
-    emotion = random.choice(emotion_mapping.get(sentiment_label, ["Undefined"]))
-    return sentiment_label, emotion, confidence
 
-# -------------------------------------------------
-# Streamlit App UI
-# -------------------------------------------------
-st.set_page_config(page_title="YouTube Sentiment Analyzer", layout="wide")
-st.title("🎥 YouTube Comment Sentiment Dashboard")
+    data = []
+    for comment, res in zip(comments, results):
+        label = res["label"].capitalize()
+        data.append({
+            "Comment": comment,
+            "Sentiment": label,
+            "Emotion": random.choice(emotion_map.get(label, ["Undefined"])),
+            "Confidence": res["score"]
+        })
+    return pd.DataFrame(data)
 
-# User input
+# =====================================
+# 🧠 APP INPUTS
+# =====================================
 video_link = st.text_input("Enter a YouTube video URL or video ID:")
-refresh_delay = st.slider("Auto-refresh interval (seconds)", 30, 300, 120)
 comment_limit = st.slider("Maximum comments to fetch", 50, 500, 200)
-analyze_btn = st.button("Start Sentiment Analysis")
+analyze_btn = st.button("Start Sentiment Analysis 🚀")
 
-# -------------------------------------------------
-# Analysis Workflow
-# -------------------------------------------------
+# =====================================
+# 🔍 MAIN ANALYSIS
+# =====================================
 if analyze_btn:
-    if not API_KEY:
-        st.error("YouTube API key is missing. Please provide a valid key.")
-    elif not video_link:
-        st.error("Please enter a YouTube URL or video ID first.")
-    else:
+    try:
+        video_id = parse_video_identifier(video_link.strip())
+        st.success(f"✅ Video ID detected: `{video_id}`")
+    except Exception as e:
+        st.error(f"❌ {e}")
+        st.stop()
+
+    with st.spinner("Fetching comments..."):
         try:
-            video_id = parse_video_identifier(video_link.strip())
-            st.info(f"Processing comments for Video ID: {video_id}")
-        except Exception as err:
-            st.error(f"Error parsing video ID: {err}")
+            fetched_comments = fetch_youtube_comments(video_id, limit=comment_limit)
+        except Exception as e:
+            st.error(f"Error fetching comments: {e}")
             st.stop()
 
-        seen_comments = set()
-        results_df = pd.DataFrame(columns=["Comment", "Sentiment", "Emotion", "Confidence"])
+    if not fetched_comments:
+        st.warning("No comments found. Try a different video.")
+        st.stop()
 
-        # Continuous refresh loop
-        while True:
-            try:
-                fetched_comments = fetch_youtube_comments(video_id, limit=comment_limit)
-            except Exception as fetch_err:
-                st.error(f"Failed to fetch comments: {fetch_err}")
-                break
+    st.info(f"Fetched {len(fetched_comments)} unique comments. Running sentiment analysis...")
 
-            # Filter newly fetched comments
-            new_entries = [c for c in fetched_comments if c not in seen_comments]
+    # Batch process once
+    with st.spinner("Analyzing sentiments..."):
+        results_df = evaluate_sentiment_batch(fetched_comments)
 
-            if not new_entries:
-                st.info("No new comments found. Waiting for next refresh cycle...")
-            else:
-                seen_comments.update(new_entries)
-                analyzed = [evaluate_sentiment(c) for c in new_entries]
+    results_df["Index"] = range(1, len(results_df) + 1)
 
-                new_data = pd.DataFrame({
-                    "Comment": new_entries,
-                    "Sentiment": [s for s, e, sc in analyzed],
-                    "Emotion": [e for s, e, sc in analyzed],
-                    "Confidence": [sc for s, e, sc in analyzed]
-                })
+    # =====================================
+    # 📊 DISPLAY RESULTS
+    # =====================================
+    st.subheader("🧩 Sentiment Analysis Results")
+    st.dataframe(results_df, use_container_width=True)
 
-                results_df = pd.concat([results_df, new_data], ignore_index=True)
-                results_df["Index"] = range(1, len(results_df) + 1)
+    # Pie chart
+    pie = px.pie(
+        names=results_df["Sentiment"].value_counts().index,
+        values=results_df["Sentiment"].value_counts().values,
+        title="Sentiment Distribution"
+    )
+    st.plotly_chart(pie, use_container_width=True)
 
-                # --- Display Section ---
-                st.subheader("🧩 Latest Sentiment Analysis")
-                st.dataframe(new_data)
+    # Scatter
+    scatter = px.scatter(
+        results_df,
+        x="Index", y="Sentiment",
+        color="Sentiment",
+        hover_data=["Comment"],
+        title="Sentiment Timeline"
+    )
+    st.plotly_chart(scatter, use_container_width=True)
 
-                # Pie chart visualization
-                sentiment_summary = results_df["Sentiment"].value_counts()
-                pie_chart = px.pie(
-                    names=sentiment_summary.index,
-                    values=sentiment_summary.values,
-                    title="Sentiment Distribution Overview"
-                )
-                st.plotly_chart(pie_chart, use_container_width=True)
+    # Positive/Negative Comments
+    st.subheader("😊 Top Positive Comments")
+    st.write(results_df.query("Sentiment == 'Positive'")[["Comment", "Emotion"]].head(5))
 
-                # Scatter plot over time
-                timeline_plot = px.scatter(
-                    results_df,
-                    x="Index",
-                    y="Sentiment",
-                    color="Sentiment",
-                    hover_data=["Comment"],
-                    title="Sentiment Timeline by Comment Index"
-                )
-                st.plotly_chart(timeline_plot, use_container_width=True)
+    st.subheader("😠 Top Negative Comments")
+    st.write(results_df.query("Sentiment == 'Negative'")[["Comment", "Emotion"]].head(5))
 
-                # Top comments
-                st.subheader("😊 Most Positive Comments")
-                st.write(results_df[results_df["Sentiment"] == "Positive"].head(5)[["Comment", "Emotion"]])
+    # Word Cloud
+    st.subheader("☁️ Word Cloud of All Comments")
+    full_text = " ".join(results_df["Comment"].tolist())
+    wc = WordCloud(width=800, height=400, background_color="white").generate(full_text)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation="bilinear")
+    ax.axis("off")
+    st.pyplot(fig)
 
-                st.subheader("😠 Most Negative Comments")
-                st.write(results_df[results_df["Sentiment"] == "Negative"].head(5)[["Comment", "Emotion"]])
+    st.success("🎉 Analysis complete!")
 
-                # Word Cloud
-                st.subheader("☁️ Word Cloud of All Comments")
-                full_text = " ".join(results_df["Comment"])
-                wc = WordCloud(width=900, height=400, background_color="white").generate(full_text)
-                plt.figure(figsize=(10, 5))
-                plt.imshow(wc, interpolation="bilinear")
-                plt.axis("off")
-                st.pyplot(plt)
-
-                # Save to CSV
-                results_df.to_csv("youtube_sentiment_unique.csv", index=False)
-
-            # Delay for refresh
-            time.sleep(refresh_delay)

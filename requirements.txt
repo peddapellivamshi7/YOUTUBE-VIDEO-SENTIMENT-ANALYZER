@@ -1,8 +1,9 @@
 streamlit
-pandas
-google-api-python-client
 transformers
 torch
+google-api-python-client
+python-dotenv
 wordcloud
-matplotlib
 plotly
+matplotlib
+pandas
